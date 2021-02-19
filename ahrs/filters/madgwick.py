@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""
+r"""
 Madgwick Orientation Filter
 ===========================
 
@@ -363,17 +363,34 @@ Footnotes
 
 References
 ----------
-.. [Madgwick] Sebastian Madgwick. An efficient orientation filter for inertial 
+.. [Madgwick] Sebastian Madgwick. An efficient orientation filter for inertial
     and inertial/magnetic sensor arrays. April 30, 2010.
     http://www.x-io.co.uk/open-source-imu-and-ahrs-algorithms/
 
-"""
+"""  # noqa
 
 import numpy as np
-from ..common.orientation import q_prod, q_conj, acc2q, am2q
+from ..common.orientation_njit import q_prod, q_conj, acc2q, am2q
+from numba import types
+from numba.experimental import jitclass
 
+spec = [
+    ("acc", types.double[:, :]),
+    ("gyr", types.double[:, :]),
+    ("mag", types.double[:, :]),
+    ("q0", types.double[:]),
+    ("gain", types.double),
+    ("frequency", types.double),
+    ("method", types.unicode_type),
+    ("Dt", types.double),
+    ("has_mag", types.boolean),
+    ("Q", types.double[:, :])
+]
+
+
+@jitclass(spec)
 class Madgwick:
-    """Madgwick's Gradient Descent Orientation Filter
+    r"""Madgwick's Gradient Descent Orientation Filter
 
     If ``acc`` and ``gyr`` are given as parameters, the orientations will be
     immediately computed with method ``updateIMU``.
@@ -491,18 +508,51 @@ class Madgwick:
     Following the original article, the gain defaults to ``0.033`` for IMU
     arrays, and to ``0.041`` for MARG arrays.
 
-    """
-    def __init__(self, gyr: np.ndarray = None, acc: np.ndarray = None, mag: np.ndarray = None, **kwargs):
-        self.gyr = gyr
-        self.acc = acc
-        self.mag = mag
-        self.frequency = kwargs.get('frequency', 100.0)
-        self.Dt = kwargs.get('Dt', 1.0/self.frequency)
-        self.q0 = kwargs.get('q0')
-        self.gain = kwargs.get('beta')  # Setting gain with `beta` will be removed in the future.
-        if self.gain is None:
-            self.gain = kwargs.get('gain', 0.033 if self.mag is None else 0.041)
-        if self.acc is not None and self.gyr is not None:
+    """  # noqa
+
+    def __init__(self, gyr: np.ndarray = None, acc: np.ndarray = None,
+                 mag: np.ndarray = None, q0: np.ndarray = None,
+                 gain: float = None, frequency: float = 100., Dt: float = None,
+                 beta: float = None):
+        if gyr is not None and acc is not None:
+            self.gyr = gyr
+            self.acc = acc
+            do_computation = True
+        else:  # self.acc and self.gyr can't be set to None due to numba typing
+            do_computation = False
+
+        if mag is not None:
+            self.mag = mag
+            self.has_mag = True
+        else:  # self.mag can't be set to None due to numba typing
+            self.has_mag = False
+
+        if Dt is None:
+            self.frequency = frequency
+            self.Dt = 1. / self.frequency
+        else:
+            self.Dt = Dt
+            self.frequency = 1. / self.Dt
+
+        # Use beta as gain if provided, else gain if provided else default values  # noqa E501
+        if beta is not None:
+            self.gain = beta  # Setting gain with `beta` will be removed in the future.  # noqa E501
+        elif gain is None and mag is None:
+            self.gain = 0.033
+        elif gain is None and mag is not None:
+            self.gain = 0.041
+        else:
+            self.gain = gain
+
+        if do_computation:  # If acc and gyr were provided
+            # Grab q0 for the inputs or precompute it
+            if q0 is not None:
+                self.q0 = q0 / np.linalg.norm(q0)
+            elif self.has_mag:
+                self.q0 = am2q(self.acc[0], self.mag[0])
+            else:
+                self.q0 = acc2q(self.acc[0])
+            # Do the computation
             self.Q = self._compute_all()
 
     def _compute_all(self) -> np.ndarray:
@@ -522,21 +572,20 @@ class Madgwick:
             raise ValueError("acc and gyr are not the same size")
         num_samples = len(self.acc)
         Q = np.zeros((num_samples, 4))
+        Q[0] = self.q0
         # Compute with IMU architecture
-        if self.mag is None:
-            Q[0] = acc2q(self.acc[0]) if self.q0 is None else self.q0/np.linalg.norm(self.q0)
+        if not self.has_mag:
             for t in range(1, num_samples):
-                Q[t] = self.updateIMU(Q[t-1], self.gyr[t], self.acc[t])
+                Q[t] = self.updateIMU(Q[t - 1], self.gyr[t], self.acc[t])
             return Q
         # Compute with MARG architecture
         if self.mag.shape != self.gyr.shape:
             raise ValueError("mag and gyr are not the same size")
-        Q[0] = am2q(self.acc[0], self.mag[0]) if self.q0 is None else self.q0/np.linalg.norm(self.q0)
         for t in range(1, num_samples):
-            Q[t] = self.updateMARG(Q[t-1], self.gyr[t], self.acc[t], self.mag[t])
+            Q[t] = self.updateMARG(Q[t - 1], self.gyr[t], self.acc[t], self.mag[t])  # noqa E501
         return Q
 
-    def updateIMU(self, q: np.ndarray, gyr: np.ndarray, acc: np.ndarray) -> np.ndarray:
+    def updateIMU(self, q: np.ndarray, gyr_sample: np.ndarray, acc_sample: np.ndarray) -> np.ndarray:  # noqa E501
         """
         Quaternion Estimation with IMU architecture.
 
@@ -544,9 +593,9 @@ class Madgwick:
         ----------
         q : numpy.ndarray
             A-priori quaternion.
-        gyr : numpy.ndarray
+        gyr_sample : numpy.ndarray
             Sample of tri-axial Gyroscope in rad/s
-        acc : numpy.ndarray
+        acc_sample : numpy.ndarray
             Sample of tri-axial Accelerometer in m/s^2
 
         Returns
@@ -556,7 +605,6 @@ class Madgwick:
 
         Examples
         --------
-
         Assuming we have a tri-axial gyroscope array with 1000 samples, and
         1000 samples of a tri-axial accelerometer. We get the attitude with the
         Madgwick algorithm as:
@@ -578,30 +626,30 @@ class Madgwick:
         This builds the array ``Q``, where all attitude estimations will be
         stored as quaternions.
 
-        """
-        if gyr is None or not np.linalg.norm(gyr)>0:
+        """  # noqa
+        if gyr_sample is None or not np.linalg.norm(gyr_sample) > 0:
             return q
-        qDot = 0.5 * q_prod(q, [0, *gyr])                           # (eq. 12)
-        a_norm = np.linalg.norm(acc)
-        if a_norm>0:
-            a = acc/a_norm
-            qw, qx, qy, qz = q/np.linalg.norm(q)
+        qDot = 0.5 * q_prod(q, np.append(0., gyr_sample))            # (eq. 12)
+        a_norm = np.linalg.norm(acc_sample)
+        if a_norm > 0:
+            a = acc_sample / a_norm
+            qw, qx, qy, qz = q / np.linalg.norm(q)
             # Gradient objective function (eq. 25) and Jacobian (eq. 26)
-            f = np.array([2.0*(qx*qz - qw*qy)   - a[0],
-                          2.0*(qw*qx + qy*qz)   - a[1],
-                          2.0*(0.5-qx**2-qy**2) - a[2]])            # (eq. 25)
-            J = np.array([[-2.0*qy,  2.0*qz, -2.0*qw, 2.0*qx],
-                          [ 2.0*qx,  2.0*qw,  2.0*qz, 2.0*qy],
-                          [ 0.0,    -4.0*qx, -4.0*qy, 0.0   ]])     # (eq. 26)
+            f = np.array([2.0 * (qx * qz - qw * qy)   - a[0],
+                          2.0 * (qw * qx + qy * qz)   - a[1],
+                          2.0 * (0.5 - qx**2 - qy**2) - a[2]])       # (eq. 25)
+            J = np.array([[-2.0 * qy,  2.0 * qz, -2.0 * qw, 2.0 * qx],
+                          [ 2.0 * qx,  2.0 * qw,  2.0 * qz, 2.0 * qy],
+                          [ 0.0,    -4.0 * qx, -4.0 * qy, 0.0   ]])  # (eq. 26)
             # Objective Function Gradient
-            gradient = J.T@f                                        # (eq. 34)
+            gradient = J.T @ f                                       # (eq. 34)
             gradient /= np.linalg.norm(gradient)
-            qDot -= self.gain*gradient                              # (eq. 33)
-        q += qDot*self.Dt                                           # (eq. 13)
+            qDot -= self.gain * gradient                             # (eq. 33)
+        q += qDot * self.Dt                                          # (eq. 13)
         q /= np.linalg.norm(q)
         return q
 
-    def updateMARG(self, q: np.ndarray, gyr: np.ndarray, acc: np.ndarray, mag: np.ndarray) -> np.ndarray:
+    def updateMARG(self, q: np.ndarray, gyr_sample: np.ndarray, acc_sample: np.ndarray, mag_sample: np.ndarray) -> np.ndarray:  # noqa E501
         """
         Quaternion Estimation with a MARG architecture.
 
@@ -609,11 +657,11 @@ class Madgwick:
         ----------
         q : numpy.ndarray
             A-priori quaternion.
-        gyr : numpy.ndarray
+        gyr_sample : numpy.ndarray
             Sample of tri-axial Gyroscope in rad/s
-        acc : numpy.ndarray
+        acc_sample : numpy.ndarray
             Sample of tri-axial Accelerometer in m/s^2
-        mag : numpy.ndarray
+        mag_sample : numpy.ndarray
             Sample of tri-axial Magnetometer in nT
 
         Returns
@@ -623,7 +671,6 @@ class Madgwick:
 
         Examples
         --------
-
         Assuming we have a tri-axial gyroscope array with 1000 samples, a
         second array with 1000 samples of a tri-axial accelerometer, and a
         third array with 1000 samples of a tri-axial magnetometer. We get the
@@ -646,21 +693,21 @@ class Madgwick:
         This builds the array ``Q``, where all attitude estimations will be
         stored as quaternions.
 
-        """
-        if gyr is None or not np.linalg.norm(gyr)>0:
+        """  # noqa
+        if gyr_sample is None or not np.linalg.norm(gyr_sample) > 0:
             return q
-        if mag is None or not np.linalg.norm(mag)>0:
-            return self.updateIMU(q, gyr, acc)
-        qDot = 0.5 * q_prod(q, [0, *gyr])                           # (eq. 12)
-        a_norm = np.linalg.norm(acc)
-        if a_norm>0:
-            a = acc/a_norm
-            m = mag/np.linalg.norm(mag)
+        if mag_sample is None or not np.linalg.norm(mag_sample) > 0:
+            return self.updateIMU(q, gyr_sample, acc_sample)
+        qDot = 0.5 * q_prod(q, np.append(0., gyr_sample))           # (eq. 12)
+        a_norm = np.linalg.norm(acc_sample)
+        if a_norm > 0:
+            a = acc_sample / a_norm
+            m = mag_sample / np.linalg.norm(mag_sample)
             # Rotate normalized magnetometer measurements
-            h = q_prod(q, q_prod([0, *m], q_conj(q)))               # (eq. 45)
-            bx = np.linalg.norm([h[1], h[2]])                       # (eq. 46)
+            h = q_prod(q, q_prod(np.append(0., m), q_conj(q)))      # (eq. 45)
+            bx = np.sqrt(h[1]**2 + h[2]**2)                         # (eq. 46)
             bz = h[3]
-            qw, qx, qy, qz = q/np.linalg.norm(q)
+            qw, qx, qy, qz = q / np.linalg.norm(q)
             # Gradient objective function (eq. 31) and Jacobian (eq. 32)
             f = np.array([2.0*(qx*qz - qw*qy)   - a[0],
                           2.0*(qw*qx + qy*qz)   - a[1],
@@ -676,7 +723,7 @@ class Madgwick:
                           [ 2.0*bx*qy,            2.0*bx*qz-4.0*bz*qx,  2.0*bx*qw-4.0*bz*qy,  2.0*bx*qx          ]]) # (eq. 32)
             gradient = J.T@f                                        # (eq. 34)
             gradient /= np.linalg.norm(gradient)
-            qDot -= self.gain*gradient                              # (eq. 33)
-        q += qDot*self.Dt                                           # (eq. 13)
+            qDot -= self.gain * gradient                            # (eq. 33)
+        q += qDot * self.Dt                                         # (eq. 13)
         q /= np.linalg.norm(q)
         return q
