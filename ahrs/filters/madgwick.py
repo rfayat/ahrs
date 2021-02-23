@@ -370,7 +370,7 @@ References
 """  # noqa
 
 import numpy as np
-from ..common.orientation_njit import q_prod, q_conj, acc2q, am2q
+from ..common.orientation import q_prod, q_conj, acc2q, am2q
 from numba import types
 from numba.experimental import jitclass
 
