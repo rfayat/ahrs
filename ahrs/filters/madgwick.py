@@ -370,7 +370,7 @@ References
 """  # noqa
 
 import numpy as np
-from ..common.orientation import q_prod, q_conj, acc2q, am2q
+from ..common.orientation import q_prod, q_conj, acc2q, am2q, q_rot_g
 from numba import types
 from numba.experimental import jitclass
 
@@ -721,9 +721,16 @@ class Madgwick:
                           [-2.0*bz*qy,            2.0*bz*qz,           -4.0*bx*qy-2.0*bz*qw, -4.0*bx*qz+2.0*bz*qx],
                           [-2.0*bx*qz+2.0*bz*qx,  2.0*bx*qy+2.0*bz*qw,  2.0*bx*qx+2.0*bz*qz, -2.0*bx*qw+2.0*bz*qy],
                           [ 2.0*bx*qy,            2.0*bx*qz-4.0*bz*qx,  2.0*bx*qw-4.0*bz*qy,  2.0*bx*qx          ]]) # (eq. 32)
-            gradient = J.T@f                                        # (eq. 34)
+            gradient = J.T @ f                                      # (eq. 34)
             gradient /= np.linalg.norm(gradient)
             qDot -= self.gain * gradient                            # (eq. 33)
         q += qDot * self.Dt                                         # (eq. 13)
         q /= np.linalg.norm(q)
         return q
+
+    def attitude_estimate(self):
+        "Return the attitude estimate from the computed quaternions"
+        attitude = np.zeros_like(self.acc)
+        for i, q in enumerate(self.Q):
+            attitude[i] = q_rot_g(q)
+        return attitude

@@ -280,6 +280,7 @@ def q_mult_R(q: np.ndarray) -> np.ndarray:
     return Q
 
 
+@njit
 def q_rot(q: np.ndarray, v: np.ndarray) -> np.ndarray:
     """Rotate vector :math:`\\mathbf{v}` through quaternion :math:`\\mathbf{q}`.
 
@@ -303,6 +304,16 @@ def q_rot(q: np.ndarray, v: np.ndarray) -> np.ndarray:
         -2.0*v[0]*(qy**2 + qz**2 - 0.5) + 2.0*v[1]*(qw*qz + qx*qy)       - 2.0*v[2]*(qw*qy - qx*qz),
         -2.0*v[0]*(qw*qz - qx*qy)       - 2.0*v[1]*(qx**2 + qz**2 - 0.5) + 2.0*v[2]*(qw*qx + qy*qz),
          2.0*v[0]*(qw*qy + qx*qz)       - 2.0*v[1]*(qw*qx - qy*qz)       - 2.0*v[2]*(qx**2 + qy**2 - 0.5)])
+
+
+@njit
+def q_rot_g(q: np.ndarray) -> np.ndarray:
+    r"Rotate vector [0, 0, 1] through quaternion :math:`\\mathbf{q}`."
+    qw, qx, qy, qz = q
+    return np.array([
+        -2.0 * (qw * qy - qx * qz),
+        2.0 * (qw * qx + qy * qz),
+        -2.0 * (qx**2 + qy**2 - 0.5)])
 
 
 def axang2quat(axis: np.ndarray, angle: Union[int, float], rad: bool = True) -> np.ndarray:
