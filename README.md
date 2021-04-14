@@ -16,6 +16,22 @@ This package's focus is **fast prototyping**, **education**, **testing** and **m
 
 AHRS is compatible with **Python 3.6** and newer.
 
+## A few notes about this fork
+This repository is a fork from [ahrs](https://github.com/Mayitzin/ahrs).
+
+As mentioned by [@Mayitzin](https://github.com/Mayitzin/ahrs) above, the intended goal of this package is not performance. I nevertheless needed to try a range of attitude estimate filters on a few hundreds recordings of >100k samples and love the unique pure python api offered by this package. As I did not really need very high performance but the computation time got a bit long, I've decided to play a bit with [numba jit-classes](http://numba.pydata.org/numba-doc/dev/user/jitclass.html), which leverages JIT compilation to accelerate python code with relatively modest revamping of the code.
+
+This fork therefore converts a few filters [Mahony](https://ahrs.readthedocs.io/en/latest/filters/mahony.html), [Madgwick](https://ahrs.readthedocs.io/en/latest/filters/madgwick.html) and [EKF](https://ahrs.readthedocs.io/en/latest/filters/ekf.html) for the moment, to numba jit-classes. A summary of the impact on computation time on my machine **for a time series of 100k samples** using only **IMU** data or also magnetometers (**MIMU**) are available below:
+
+|  | Pure Python (IMU / MIMU) | NumbaClass (IMU / MIMU) | Δt (IMU / MIMU) | Overhead |
+| --- | --- | --- | ---|---|
+| **Madgwick** | 8.93s / 15.31s | 3.33s / 4.39s |-62% / -71% |9.17s|
+| **Mahony** | 14.91s / 24.08s | 5.38s / 4.90s | -64% / -80% |21.34s|
+| **EKF** | 73.26s / 134.95s | 11.91s / 11.72s | -83% / -91% | 32.33s|
+
+
+The gains in computation time are significative but since numba compilation adds a relatively big overhead to the computation and given the spirit in which [@Mayitzin](https://github.com/Mayitzin/ahrs) made the package (only one dependency, focus on readability of the code...), I don't think it would really make sense to open a Pull Request to [ahrs](https://github.com/Mayitzin/ahrs) but I'm happy to share the code.
+
 ## Installation
 
 The most recommended method is to install AHRS directly from this repository to get the latest version:
