@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""
+r"""
 Attitude from angular rate
 ==========================
 
@@ -264,10 +264,25 @@ References
     approach for describing the behaviour of non-spherical particles.
     (https://link.springer.com/content/pdf/10.1007/s00707-013-0914-2.pdf)
 
-"""
+"""  # noqa
 
 import numpy as np
+from numba import types
+from numba.experimental import jitclass
 
+spec = [
+    ("gyr", types.double[:, :]),
+    ("q0", types.double[:]),
+    ("frequency", types.double),
+    ("order", types.int_),
+    ("method", types.unicode_type),
+    ("Dt", types.double),
+    ("Q", types.double[:, :])
+
+]
+
+
+@jitclass(spec)
 class AngularRate:
     """
     Quaternion update by integrating angular velocity
@@ -351,15 +366,28 @@ class AngularRate:
            [-0.91087203, -0.1014633 ,  0.28977124,  0.2757716 ],
            [-0.91164416, -0.09861271,  0.2903888 ,  0.27359606]])
 
-    """
-    def __init__(self, gyr: np.ndarray = None, q0: np.ndarray = None, frequency: float = 100.0, order: int = 1, **kw):
-        self.gyr = gyr
-        self.frequency = frequency
+    """  # noqa
+
+    def __init__(self, gyr: np.ndarray = None,
+                 q0: np.ndarray = np.array([1.0, 0.0, 0.0, 0.0]),
+                 frequency: float = 100.0,
+                 order: int = 1, method: str = "closed", Dt: float = None):
+        if gyr is not None:
+            self.gyr = gyr
+            do_computation = True
+        else:  # Can't assigne self.gyr to None due to numba typing
+            do_computation = False
         self.order = order
-        self.method = kw.get('method', 'closed')
-        self.q0 = kw.get('q0', np.array([1.0, 0.0, 0.0, 0.0]))
-        self.Dt = kw.get('Dt', 1.0/self.frequency)
-        if self.gyr is not None:
+        self.method = method.lower()
+        self.q0 = q0
+        if Dt is None:
+            self.frequency = frequency
+            self.Dt = 1. / self.frequency
+        else:  #
+            self.Dt = Dt
+            self.frequency = 1 / self.Dt
+
+        if do_computation:
             self.Q = self._compute_all()
 
     def _compute_all(self):
@@ -368,11 +396,12 @@ class AngularRate:
         Q = np.zeros((num_samples, 4))
         Q[0] = self.q0
         for t in range(1, num_samples):
-            Q[t] = self.update(Q[t-1], self.gyr[t], method=self.method, order=self.order)
+            out = self.update(Q[t - 1], self.gyr[t], method=self.method, order=self.order)  # noqa E501
+            Q[t] = out
         return Q
 
-    def update(self, q: np.ndarray, gyr: np.ndarray, method: str = 'closed', order: int = 1) -> np.ndarray:
-        """Update the quaternion estimation
+    def update(self, q: np.ndarray, gyr_sample: np.ndarray, method: str = 'closed', order: int = 1) -> np.ndarray:
+        r"""Update the quaternion estimation
 
         Estimate quaternion :math:`\\mathbf{q}_{t+1}` from given a-priori
         quaternion :math:`\\mathbf{q}_t` with a given angular rate measurement
@@ -402,7 +431,7 @@ class AngularRate:
         ----------
         q : numpy.ndarray
             A-priori quaternion.
-        gyr : numpy.ndarray
+        gyr_sample : numpy.ndarray
             Array with triaxial measurements of angular velocity in rad/s.
         method : str, default: ``'closed'``
             Estimation method to use. Options are: ``'series'`` or ``'closed'``.
@@ -435,26 +464,29 @@ class AngularRate:
                [-0.92547793, -0.23388968,  0.19889139, -0.22187479],
                [-0.92504595, -0.23174096,  0.20086376, -0.22414251]])
 
-        """
+        """  # noqa
         if method.lower() not in ['series', 'closed']:
-            raise ValueError(f"Invalid method '{method}'. Try 'series' or 'closed'")
+            raise ValueError("Invalid method. Try 'series' or 'closed'")
         q = np.copy(q)
-        if gyr is None or not np.linalg.norm(gyr)>0:
+        if gyr_sample is None or not np.linalg.norm(gyr_sample) > 0:
             return q
+        gx, gy, gz = gyr_sample
         Omega = np.array([
-            [   0.0, -gyr[0], -gyr[1], -gyr[2]],
-            [gyr[0],     0.0,  gyr[2], -gyr[1]],
-            [gyr[1], -gyr[2],     0.0,  gyr[0]],
-            [gyr[2],  gyr[1], -gyr[0],     0.0]])
+            [0.0, -gx, -gy, -gz],
+            [ gx, 0.0,  gz, -gy],
+            [ gy, -gz, 0.0,  gx],
+            [ gz,  gy, -gx, 0.0]
+        ])
         if method.lower() == 'closed':
-            w = np.linalg.norm(gyr)
-            A = np.cos(w*self.Dt/2.0)*np.eye(4) + np.sin(w*self.Dt/2.0)*Omega/w
+            w = np.linalg.norm(gyr_sample)
+            A = np.cos(w * self.Dt / 2.0) * np.eye(4) +\
+                np.sin(w * self.Dt / 2.0) * Omega / w
         else:
             if order < 0:
-                raise ValueError(f"The order must be an int equal or greater than 0. Got {order}")
+                raise ValueError("The order must be an int equal or greater than 0.")  # noqa E501
             S = 0.5 * self.Dt * Omega
             A = np.identity(4)
-            for i in range(1, order+1):
-                A += S**i / np.math.factorial(i)
+            for i in range(1, order + 1):
+                A += S**i / np.math.gamma(i + 1)  # equivalent to factorial(i)
         q = A @ q
         return q / np.linalg.norm(q)

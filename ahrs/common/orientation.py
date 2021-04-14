@@ -14,10 +14,13 @@ Notes
 from typing import Tuple, Union
 import numpy as np
 from .mathfuncs import cosd, sind
-from .constants import *
+from .constants import *  # noqa W401
+from numba import njit, jit
 
+
+@njit
 def q_conj(q: np.ndarray) -> np.ndarray:
-    """Conjugate of unit quaternion
+    r"""Conjugate of unit quaternion
 
     A unit quaternion, whose form is :math:`\\mathbf{q} = (q_w, q_x, q_y, q_z)`,
     has a conjugate of the form :math:`\\mathbf{q}^* = (q_w, -q_x, -q_y, -q_z)`.
@@ -59,10 +62,11 @@ def q_conj(q: np.ndarray) -> np.ndarray:
            (http://www.neil.dantam.name/note/dantam-quaternion.pdf)
     .. [2] https://en.wikipedia.org/wiki/Quaternion#Conjugation,_the_norm,_and_reciprocal
 
-    """
-    if q.ndim>2 or q.shape[-1]!=4:
-        raise ValueError("Quaternion must be of shape (4,) or (N, 4), but has shape {}".format(q.shape))
-    return np.array([1., -1., -1., -1.])*np.array(q)
+    """  # noqa
+    if q.ndim > 2 or q.shape[-1] != 4:
+        raise ValueError("Quaternion must be of shape (4,) or (N, 4)")  # noqa E501
+    return np.array([1., -1., -1., -1.]) * q
+
 
 def q_random(size: int = 1) -> np.ndarray:
     """
@@ -151,6 +155,8 @@ def q_norm(q: np.ndarray) -> np.ndarray:
         return q/np.linalg.norm(q, axis=1)[:, np.newaxis]
     return q/np.linalg.norm(q)
 
+
+@njit
 def q_prod(p: np.ndarray, q: np.ndarray) -> np.ndarray:
     """Product of two unit quaternions.
 
@@ -219,13 +225,14 @@ def q_prod(p: np.ndarray, q: np.ndarray) -> np.ndarray:
     .. [MWQM] Mathworks: Quaternion Multiplication.
            https://www.mathworks.com/help/aeroblks/quaternionmultiplication.html
 
-    """
-    pq = np.zeros(4)
-    pq[0] = p[0]*q[0] - p[1]*q[1] - p[2]*q[2] - p[3]*q[3]
-    pq[1] = p[0]*q[1] + p[1]*q[0] + p[2]*q[3] - p[3]*q[2]
-    pq[2] = p[0]*q[2] - p[1]*q[3] + p[2]*q[0] + p[3]*q[1]
-    pq[3] = p[0]*q[3] + p[1]*q[2] - p[2]*q[1] + p[3]*q[0]
+    """  # noqa
+    pq = np.array([0., 0., 0., 0.])
+    pq[0] = p[0] * q[0] - p[1] * q[1] - p[2] * q[2] - p[3] * q[3]
+    pq[1] = p[0] * q[1] + p[1] * q[0] + p[2] * q[3] - p[3] * q[2]
+    pq[2] = p[0] * q[2] - p[1] * q[3] + p[2] * q[0] + p[3] * q[1]
+    pq[3] = p[0] * q[3] + p[1] * q[2] - p[2] * q[1] + p[3] * q[0]
     return pq
+
 
 def q_mult_L(q: np.ndarray) -> np.ndarray:
     """Matrix form of a left-sided quaternion multiplication Q.
@@ -249,6 +256,7 @@ def q_mult_L(q: np.ndarray) -> np.ndarray:
         [q[3], -q[2],  q[1],  q[0]]])
     return Q
 
+
 def q_mult_R(q: np.ndarray) -> np.ndarray:
     """Matrix form of a right-sided quaternion multiplication Q.
 
@@ -271,6 +279,8 @@ def q_mult_R(q: np.ndarray) -> np.ndarray:
         [q[3],  q[2], -q[1],  q[0]]])
     return Q
 
+
+@njit
 def q_rot(q: np.ndarray, v: np.ndarray) -> np.ndarray:
     """Rotate vector :math:`\\mathbf{v}` through quaternion :math:`\\mathbf{q}`.
 
@@ -294,6 +304,17 @@ def q_rot(q: np.ndarray, v: np.ndarray) -> np.ndarray:
         -2.0*v[0]*(qy**2 + qz**2 - 0.5) + 2.0*v[1]*(qw*qz + qx*qy)       - 2.0*v[2]*(qw*qy - qx*qz),
         -2.0*v[0]*(qw*qz - qx*qy)       - 2.0*v[1]*(qx**2 + qz**2 - 0.5) + 2.0*v[2]*(qw*qx + qy*qz),
          2.0*v[0]*(qw*qy + qx*qz)       - 2.0*v[1]*(qw*qx - qy*qz)       - 2.0*v[2]*(qx**2 + qy**2 - 0.5)])
+
+
+@njit
+def q_rot_g(q: np.ndarray) -> np.ndarray:
+    r"Rotate vector [0, 0, 1] through quaternion :math:`\\mathbf{q}`."
+    qw, qx, qy, qz = q
+    return np.array([
+        -2.0 * (qw * qy - qx * qz),
+        2.0 * (qw * qx + qy * qz),
+        -2.0 * (qx**2 + qy**2 - 0.5)])
+
 
 def axang2quat(axis: np.ndarray, angle: Union[int, float], rad: bool = True) -> np.ndarray:
     """Quaternion from given Axis-Angle.
@@ -333,6 +354,7 @@ def axang2quat(axis: np.ndarray, angle: Union[int, float], rad: bool = True) -> 
     q = np.array([qw] + list(s*axis))
     return q/np.linalg.norm(q)
 
+
 def quat2axang(q: np.ndarray) -> Tuple[np.ndarray, float]:
     """Axis-Angle representation from Quaternion.
 
@@ -365,6 +387,7 @@ def quat2axang(q: np.ndarray) -> Tuple[np.ndarray, float]:
     axis = np.array([0.0, 0.0, 0.0]) if angle == 0.0 else axis/denom
     return axis, angle
 
+
 def q_correct(q: np.ndarray) -> np.ndarray:
     """Correct quaternion flipping its sign
 
@@ -396,6 +419,7 @@ def q_correct(q: np.ndarray) -> np.ndarray:
     for j in jump_pairs:
         new_q[j[0]:j[1]] *= -1.0
     return new_q
+
 
 def q2R(q: np.ndarray) -> np.ndarray:
     """Direction Cosine Matrix from given quaternion.
@@ -456,6 +480,27 @@ def q2R(q: np.ndarray) -> np.ndarray:
         [1.0-2.0*(q[2]**2+q[3]**2), 2.0*(q[1]*q[2]-q[0]*q[3]), 2.0*(q[1]*q[3]+q[0]*q[2])],
         [2.0*(q[1]*q[2]+q[0]*q[3]), 1.0-2.0*(q[1]**2+q[3]**2), 2.0*(q[2]*q[3]-q[0]*q[1])],
         [2.0*(q[1]*q[3]-q[0]*q[2]), 2.0*(q[0]*q[1]+q[2]*q[3]), 1.0-2.0*(q[1]**2+q[2]**2)]])
+
+
+@njit
+def q2R_jit(q: np.ndarray) -> np.ndarray:
+    """njit version of q2R only for one of quaternion.
+
+    Parameters
+    ----------
+    q : numpy.ndarray, shape = (4,)
+        One unit quaternion
+
+    """
+    q_normalized = q / np.linalg.norm(q)  # Normalize all quaternions
+    q0, q1, q2, q3 = q_normalized
+    return np.array([
+        [1.0-2.0*(q2**2+q3**2), 2.0*(q1*q2-q0*q3), 2.0*(q1*q3+q0*q2)],
+        [2.0*(q1*q2+q0*q3), 1.0-2.0*(q1**2+q3**2), 2.0*(q2*q3-q0*q1)],
+        [2.0*(q1*q3-q0*q2), 2.0*(q0*q1+q2*q3), 1.0-2.0*(q1**2+q2**2)]])
+
+
+
 
 def q2euler(q: np.ndarray) -> np.ndarray:
     """Euler Angles from unit Quaternion.
@@ -595,6 +640,7 @@ def rotation(ax: Union[str, int] = None, ang: float = 0.0) -> np.ndarray:
     if ax.lower()=="z":
         return np.array([[ca, -sa, 0.0], [sa, ca, 0.0], [0.0, 0.0, 1.0]])
 
+
 def rot_seq(axes: Union[list, str] = None, angles: Union[list, float] = None) -> np.ndarray:
     """Direciton Cosine Matrix from set of axes and angles.
 
@@ -655,6 +701,8 @@ def rot_seq(axes: Union[list, str] = None, angles: Union[list, float] = None) ->
             R = rotation(axes[i], angles[i])@R
     return R
 
+
+@njit
 def dcm2quat(R: np.ndarray) -> np.ndarray:
     """Quaternion from Direct Cosine Matrix.
 
@@ -679,16 +727,17 @@ def dcm2quat(R: np.ndarray) -> np.ndarray:
     if(R.shape[0] != 3):
         raise ValueError('Input needs to be a 3x3 array or matrix')
     q = np.array([1., 0., 0., 0.])
-    q[0] = 0.5*np.sqrt(1.0 + R.trace())
+    q[0] = 0.5 * np.sqrt(1.0 + np.trace(R))
     q[1] = (R[1, 2] - R[2, 1]) / q[0]
     q[2] = (R[2, 0] - R[0, 2]) / q[0]
     q[3] = (R[0, 1] - R[1, 0]) / q[0]
     q[1:] /= 4.0
     return q / np.linalg.norm(q)
 
+
 def rpy2q(angles: np.ndarray, in_deg: bool = False) -> np.ndarray:
     """Quaternion from roll-pitch-yaw angles
-    
+
     Roll is the first rotation (about X-axis), pitch is the second rotation
     (about Y-axis), and yaw is the last rotation (about Z-axis.)
 
@@ -728,9 +777,11 @@ def rpy2q(angles: np.ndarray, in_deg: bool = False) -> np.ndarray:
     q /= np.linalg.norm(q)
     return q
 
+
 def cardan2q(angles: np.ndarray, in_deg: bool = False) -> np.ndarray:
     """synonym to function rpy2q()"""
     return rpy2q(angles, in_deg=in_deg)
+
 
 def q2rpy(q: np.ndarray, in_deg: bool = False) -> np.ndarray:
     """Roll-pitch-yaw angles from quaternion.
@@ -760,9 +811,11 @@ def q2rpy(q: np.ndarray, in_deg: bool = False) -> np.ndarray:
         return angles*RAD2DEG
     return angles
 
+
 def q2cardan(q: np.ndarray, in_deg: bool = False) -> np.ndarray:
     """synonym to function q2rpy()"""
     return q2rpy(q, in_deg=in_deg)
+
 
 def ecompass(a: np.ndarray, m: np.ndarray, frame: str = 'ENU', representation: str = 'rotmat') -> np.ndarray:
     """Orientation from accelerometer and magnetometer readings
@@ -789,14 +842,59 @@ def ecompass(a: np.ndarray, m: np.ndarray, frame: str = 'ENU', representation: s
         When wrong local tangent plane coordinates, or invalid representation,
         is given.
     """
-    if frame.upper() not in ['ENU', 'NED']:
-        raise ValueError("Wrong local tangent plane coordinate frame. Try 'ENU' or 'NED'")
     if representation.lower() not in ['rotmat', 'quaternion', 'rpy', 'axisangle']:
         raise ValueError("Wrong representation type. Try 'rotmat', 'quaternion', 'rpy', or 'axisangle'")
+    R = ecompass_rotmat(a, m, frame)
+    if representation.lower() == 'quaternion':
+        return chiaverini(R)
+    elif representation.lower() == 'rpy':
+        phi = np.arctan2(R[1, 2], R[2, 2])    # Roll Angle
+        theta = -np.arcsin(R[0, 2])           # Pitch Angle
+        psi = np.arctan2(R[0, 1], R[0, 0])    # Yaw Angle
+        return np.array([phi, theta, psi])
+    elif representation.lower() == 'axisangle':
+        angle = np.arccos((R.trace()-1)/2)
+        axis = np.zeros(3)
+        if angle!=0:
+            S = np.array([R[2, 1]-R[1, 2], R[0, 2]-R[2, 0], R[1, 0]-R[0, 1]])
+            axis = S/(2*np.sin(angle))
+        return (axis, angle)
+    else:  # rotmat
+        return R
+
+
+@njit
+def ecompass_rotmat(a: np.ndarray, m: np.ndarray, frame: str = 'ENU') -> np.ndarray:
+    """Orientation from acc and mag readings as a rotation matrix
+
+    Parameters
+    ----------
+    a : numpy.ndarray
+        Sample of tri-axial accelerometer, in m/s^2.
+    m : numpy.ndarray
+        Sample of tri-axial magnetometer, in uT.
+    frame : str, default: ``'ENU'``
+        Local tangent plane coordinate frame.
+    representation : str, default: ``'rotmat'``
+        Orientation representation.
+
+    Returns
+    -------
+    np.ndarray
+        Estimated orientation.
+
+    Raises
+    ------
+    ValueError
+        When wrong local tangent plane coordinates, or invalid representation,
+        is given.
+    """
+    if frame.upper() not in ['ENU', 'NED']:
+        raise ValueError("Wrong local tangent plane coordinate frame. Try 'ENU' or 'NED'")
     a = np.copy(a)
     m = np.copy(m)
     if a.shape[-1] != 3 or m.shape[-1] != 3:
-        raise ValueError(f"Input vectors must have exactly 3 elements.")
+        raise ValueError("Input vectors must have exactly 3 elements.")
     m /= np.linalg.norm(m)
     Rz = a/np.linalg.norm(a)
     if frame.upper() == 'NED':
@@ -807,23 +905,40 @@ def ecompass(a: np.ndarray, m: np.ndarray, frame: str = 'ENU', representation: s
         Ry = np.cross(Rz, Rx)
     Rx /= np.linalg.norm(Rx)
     Ry /= np.linalg.norm(Ry)
-    R = np.c_[Rx, Ry, Rz].T
-    if representation.lower() == 'quaternion':
-        return chiaverini(R)
-    if representation.lower() == 'rpy':
-        phi = np.arctan2(R[1, 2], R[2, 2])    # Roll Angle
-        theta = -np.arcsin(R[0, 2])           # Pitch Angle
-        psi = np.arctan2(R[0, 1], R[0, 0])    # Yaw Angle
-        return np.array([phi, theta, psi])
-    if representation.lower() == 'axisangle':
-        angle = np.arccos((R.trace()-1)/2)
-        axis = np.zeros(3)
-        if angle!=0:
-            S = np.array([R[2, 1]-R[1, 2], R[0, 2]-R[2, 0], R[1, 0]-R[0, 1]])
-            axis = S/(2*np.sin(angle))
-        return (axis, angle)
+    R = np.vstack((Rx, Ry, Rz))
     return R
 
+
+@njit
+def ecompass_quaternion(a: np.ndarray, m: np.ndarray, frame: str = 'ENU') -> np.array:
+    """Orientation from accelerometer and magnetometer readings as a quaternion
+
+    Parameters
+    ----------
+    a : numpy.ndarray
+        Sample of tri-axial accelerometer, in m/s^2.
+    m : numpy.ndarray
+        Sample of tri-axial magnetometer, in uT.
+    frame : str, default: ``'ENU'``
+        Local tangent plane coordinate frame.
+    representation : str, default: ``'rotmat'``
+        Orientation representation.
+
+    Returns
+    -------
+    np.ndarray
+        Estimated orientation.
+
+    Raises
+    ------
+    ValueError
+        When wrong local tangent plane coordinates, or invalid representation,
+        is given.
+    """
+    R = ecompass_rotmat(a, m , frame)
+    return chiaverini(R)
+
+@njit
 def am2DCM(a: np.ndarray, m: np.ndarray, frame: str = 'ENU') -> np.ndarray:
     """Direction Cosine Matrix from acceleration and/or compass using TRIAD.
 
@@ -848,16 +963,15 @@ def am2DCM(a: np.ndarray, m: np.ndarray, frame: str = 'ENU') -> np.ndarray:
       Augmented Reality with Smartphones.
       (http://tyrex.inria.fr/mobile/benchmarks-attitude/)
       (https://hal.inria.fr/hal-01650142v2/document)
+
     """
     if frame.upper() not in ['ENU', 'NED']:
         raise ValueError("Wrong coordinate frame. Try 'ENU' or 'NED'")
-    a = np.array(a)
-    m = np.array(m)
     H = np.cross(m, a)
     H /= np.linalg.norm(H)
     a /= np.linalg.norm(a)
     M = np.cross(a, H)
-    if frame.upper()=='ENU':
+    if frame.upper() == 'ENU':
         return np.array([[H[0], M[0], a[0]],
                          [H[1], M[1], a[1]],
                          [H[2], M[2], a[2]]])
@@ -865,6 +979,8 @@ def am2DCM(a: np.ndarray, m: np.ndarray, frame: str = 'ENU') -> np.ndarray:
                      [M[1], H[1], -a[1]],
                      [M[2], H[2], -a[2]]])
 
+
+@njit
 def am2q(a: np.ndarray, m: np.ndarray, frame: str = 'ENU') -> np.ndarray:
     """Quaternion from acceleration and/or compass using TRIAD method.
 
@@ -898,6 +1014,8 @@ def am2q(a: np.ndarray, m: np.ndarray, frame: str = 'ENU') -> np.ndarray:
     q = dcm2quat(R)
     return q
 
+
+@njit
 def acc2q(a: np.ndarray, return_euler: bool = False) -> np.ndarray:
     """Quaternion from given acceleration.
 
@@ -940,7 +1058,7 @@ def acc2q(a: np.ndarray, return_euler: bool = False) -> np.ndarray:
     """
     q = np.array([1.0, 0.0, 0.0, 0.0])
     ex, ey, ez = 0.0, 0.0, 0.0
-    if np.linalg.norm(a)>0 and len(a)==3:
+    if np.linalg.norm(a) > 0 and len(a) == 3:
         ax, ay, az = a
         # Normalize accelerometer measurements
         a_norm = np.linalg.norm(a)
@@ -952,15 +1070,16 @@ def acc2q(a: np.ndarray, return_euler: bool = False) -> np.ndarray:
         ey = np.arctan2(-ax, np.sqrt(ay**2 + az**2))
         ez = 0.0
         if return_euler:
-            return np.array([ex, ey, ez])*RAD2DEG
+            return np.array([ex, ey, ez]) * RAD2DEG
         # Euler to Quaternion
-        cx2 = np.cos(ex/2.0)
-        sx2 = np.sin(ex/2.0)
-        cy2 = np.cos(ey/2.0)
-        sy2 = np.sin(ey/2.0)
-        q = np.array([cx2*cy2, sx2*cy2, cx2*sy2, -sx2*sy2])
+        cx2 = np.cos(ex / 2.0)
+        sx2 = np.sin(ex / 2.0)
+        cy2 = np.cos(ey / 2.0)
+        sy2 = np.sin(ey / 2.0)
+        q = np.array([cx2 * cy2, sx2 * cy2, cx2 * sy2, -sx2 * sy2])
         q /= np.linalg.norm(q)
     return q
+
 
 def am2angles(a: np.ndarray, m: np.ndarray, in_deg: bool = False) -> np.ndarray:
     """Roll-pitch-yaw angles from acceleration and compass.
@@ -1005,6 +1124,7 @@ def am2angles(a: np.ndarray, m: np.ndarray, in_deg: bool = False) -> np.ndarray:
     if in_deg:
         return angles*RAD2DEG
     return angles
+
 
 def slerp(q0: np.ndarray, q1: np.ndarray, t_array: np.ndarray, threshold: float = 0.9995) -> np.ndarray:
     """Spherical Linear Interpolation between quaternions.
@@ -1057,6 +1177,7 @@ def slerp(q0: np.ndarray, q1: np.ndarray, t_array: np.ndarray, threshold: float 
     s1 = sin_theta/sin_theta_0
     return s0[:,np.newaxis]*q0[np.newaxis,:] + s1[:,np.newaxis]*q1[np.newaxis,:]
 
+
 def logR(R: np.ndarray) -> np.ndarray:
     S = 0.5*(R-R.T)
     y = np.array([S[2, 1], -S[2, 0], S[1, 0]])
@@ -1066,6 +1187,7 @@ def logR(R: np.ndarray) -> np.ndarray:
     return np.arcsin(y_norm)*y/y_norm
 
 
+@njit
 def chiaverini(dcm: np.ndarray) -> np.ndarray:
     """
     Quaternion from a Direction Cosine Matrix with Chiaverini's algebraic method [Chiaverini]_.
@@ -1080,11 +1202,14 @@ def chiaverini(dcm: np.ndarray) -> np.ndarray:
     q : NumPy array
         Quaternion.
     """
-    n = 0.5*np.sqrt(dcm.trace() + 1.0)
-    e = np.array([0.5*np.sign(dcm[2, 1]-dcm[1, 2])*np.sqrt(dcm[0, 0]-dcm[1, 1]-dcm[2, 2]+1.0),
-                  0.5*np.sign(dcm[0, 2]-dcm[2, 0])*np.sqrt(dcm[1, 1]-dcm[2, 2]-dcm[0, 0]+1.0),
-                  0.5*np.sign(dcm[1, 0]-dcm[0, 1])*np.sqrt(dcm[2, 2]-dcm[0, 0]-dcm[1, 1]+1.0)])
-    return np.array([n, *e])
+    return np.array([
+        0.5*np.sqrt(dcm[0, 0] + dcm[1, 1] + dcm[2, 2] + 1.0),
+        0.5*np.sign(dcm[2, 1]-dcm[1, 2])*np.sqrt(dcm[0, 0]-dcm[1, 1]-dcm[2, 2]+1.0),
+        0.5*np.sign(dcm[0, 2]-dcm[2, 0])*np.sqrt(dcm[1, 1]-dcm[2, 2]-dcm[0, 0]+1.0),
+        0.5*np.sign(dcm[1, 0]-dcm[0, 1])*np.sqrt(dcm[2, 2]-dcm[0, 0]-dcm[1, 1]+1.0)
+    ])
+
+
 
 def hughes(dcm: np.ndarray) -> np.ndarray:
     """
@@ -1109,6 +1234,7 @@ def hughes(dcm: np.ndarray) -> np.ndarray:
     else:
         e = 0.25*np.array([dcm[1, 2]-dcm[2, 1], dcm[2, 0]-dcm[0, 2], dcm[0, 1]-dcm[1, 0]])/n
     return np.array([n, *e])
+
 
 def sarabandi(dcm: np.ndarray, eta: float = 0.0) -> np.ndarray:
     """
@@ -1164,6 +1290,7 @@ def sarabandi(dcm: np.ndarray, eta: float = 0.0) -> np.ndarray:
         qz = 0.5*np.sqrt(nom/denom)
     return np.array([qw, qx, qy, qz])
 
+
 def itzhack(dcm: np.ndarray, version: int = 3) -> np.ndarray:
     """
     Quaternion from a Direction Cosine Matrix with Bar-Itzhack's method [Itzhack]_.
@@ -1213,6 +1340,7 @@ def itzhack(dcm: np.ndarray, version: int = 3) -> np.ndarray:
     q = eigvec[:, eigval.argmax()]
     return np.roll(q, 1)
 
+
 def shepperd(dcm: np.ndarray) -> np.ndarray:
     """
     Quaternion from a Direction Cosine Matrix with Shepperd's method [Shepperd]_.
@@ -1240,4 +1368,3 @@ def shepperd(dcm: np.ndarray) -> np.ndarray:
         q = np.array([dcm[0, 1]-dcm[1, 0], dcm[2, 0]+dcm[0, 2], dcm[2, 1]+dcm[1, 2], 1.0-d[0]-d[1]+d[2]])
     q /= 2.0*np.sqrt(q[i])
     return q
-

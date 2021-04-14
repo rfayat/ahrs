@@ -267,8 +267,26 @@ References
 """
 
 import numpy as np
-from ..common.orientation import q_prod, q_conj, acc2q, am2q, q2R
+from ..common.orientation import q_prod, q_conj, acc2q, am2q, q2R_jit, q_rot_g
+from numba import types
+from numba.experimental import jitclass
 
+
+spec = [
+    ("acc", types.double[:, :]),
+    ("gyr", types.double[:, :]),
+    ("mag", types.double[:, :]),
+    ("q0", types.double[:]),
+    ("k_I", types.double),
+    ("k_P", types.double),
+    ("frequency", types.double),
+    ("Dt", types.double),
+    ("has_mag", types.boolean),
+    ("has_q0", types.boolean),
+    ("Q", types.double[:, :]),
+]
+
+@jitclass(spec)
 class Mahony:
     """Mahony's Nonlinear Complementary Filter on SO(3)
 
@@ -403,18 +421,43 @@ class Mahony:
         k_P: float = 1.0,
         k_I: float = 0.3,
         q0: np.ndarray = None,
-        **kwargs):
-        self.gyr = gyr
-        self.acc = acc
-        self.mag = mag
+        # Old parameter names for backward compatibility
+        kp: float = None,
+        ki: float = None,
+        Dt: float = None):
+        if gyr is not None and acc is not None:
+            self.gyr = gyr
+            self.acc = acc
+            do_computation = True
+        else:
+            do_computation = False
+        if mag is not None:
+            self.mag = mag
+            self.has_mag = True
+        else:
+            self.has_mag = False
         self.frequency = frequency
-        self.q0 = q0
+
+        if q0 is None:
+            self.has_q0 = False
+        else:
+            self.has_q0 = True
+            self.q0 = q0
+
         self.k_P = k_P
         self.k_I = k_I
-        # Old parameter names for backward compatibility
-        self.k_P = kwargs.get('kp', k_P)
-        self.k_I = kwargs.get('ki', k_I)
-        self.Dt = kwargs.get('Dt', 1.0/self.frequency)
+
+        # Parsing of old parameters names if provided
+        if kp is not None:
+            self.k_P = kp
+        if ki is not None:
+            self.k_I = ki
+
+        if Dt is not None:
+            self.Dt = Dt
+        else:
+            self.Dt = 1. / self.frequency
+
         # Estimate all orientations if sensor data is given
         if self.gyr is not None and self.acc is not None:
             self.Q = self._compute_all()
@@ -437,17 +480,24 @@ class Mahony:
         num_samples = len(self.gyr)
         Q = np.zeros((num_samples, 4))
         # Compute with IMU Architecture
-        if self.mag is None:
-            Q[0] = acc2q(self.acc[0]) if self.q0 is None else self.q0/np.linalg.norm(self.q0)
+        if not self.has_mag:
+            if not self.has_q0:
+                Q[0] = acc2q(self.acc[0])
+            else:
+                Q[0] = self.q0/np.linalg.norm(self.q0)
             for t in range(1, num_samples):
                 Q[t] = self.updateIMU(Q[t-1], self.gyr[t], self.acc[t])
-            return Q
         # Compute with MARG Architecture
-        if self.mag.shape != self.gyr.shape:
-            raise ValueError("mag and gyr are not the same size")
-        Q[0] = am2q(self.acc[0], self.mag[0]) if self.q0 is None else self.q0/np.linalg.norm(self.q0)
-        for t in range(1, num_samples):
-            Q[t] = self.updateMARG(Q[t-1], self.gyr[t], self.acc[t], self.mag[t])
+        else:  # with mag data
+            if self.mag.shape != self.gyr.shape:
+                raise ValueError("mag and gyr are not the same size")
+            if not self.has_q0:
+                Q[0] = am2q(self.acc[0], self.mag[0])
+            else:
+                Q[0] = self.q0/np.linalg.norm(self.q0)
+            for t in range(1, num_samples):
+                Q[t] = self.updateMARG(Q[t-1], self.gyr[t], self.acc[t], self.mag[t])
+
         return Q
 
     def updateIMU(self, q: np.ndarray, gyr: np.ndarray, acc: np.ndarray) -> np.ndarray:
@@ -481,13 +531,13 @@ class Mahony:
         Omega = np.copy(gyr)
         a_norm = np.linalg.norm(acc)
         if a_norm>0:
-            R = q2R(q)
-            v_a = R.T@np.array([0.0, 0.0, 1.0])     # Expected Earth's gravity
+            R = q2R_jit(q)
+            v_a = R.T @ np.array([0.0, 0.0, 1.0])   # Expected Earth's gravity
             # ECF
             omega_mes = np.cross(acc/a_norm, v_a)   # Cost function (eqs. 32c and 48a)
             b = -self.k_I*omega_mes                 # Estimated Gyro bias (eq. 48c)
             Omega = Omega - b + self.k_P*omega_mes  # Gyro correction
-        p = np.array([0.0, *Omega])
+        p = np.concatenate((np.array([0.]), Omega))
         qDot = 0.5*q_prod(q, p)                     # Rate of change of quaternion (eqs. 45 and 48b)
         q += qDot*self.Dt                           # Update orientation
         q /= np.linalg.norm(q)                      # Normalize Quaternion (Versor)
@@ -527,22 +577,30 @@ class Mahony:
         a_norm = np.linalg.norm(acc)
         if a_norm>0:
             m_norm = np.linalg.norm(mag)
-            if not m_norm>0:
+            if not m_norm>0:  # invalid measurment for the magnetometer
                 return self.updateIMU(q, gyr, acc)
-            a = np.copy(acc)/a_norm
-            m = np.copy(mag)/m_norm
-            R = q2R(q)
-            v_a = R.T@np.array([0.0, 0.0, 1.0])     # Expected Earth's gravity
-            # Rotate magnetic field to inertial frame
-            h = R@m
-            v_m = R.T@np.array([-np.linalg.norm([h[0], h[1]]), 0.0, h[2]])
-            v_m /= np.linalg.norm(v_m)
-            # ECF
-            omega_mes = np.cross(a, v_a) + np.cross(m, v_m) # Cost function (eqs. 32c and 48a)
-            b = -self.k_I*omega_mes                 # Estimated Gyro bias (eq. 48c)
-            Omega = Omega - b + self.k_P*omega_mes  # Gyro correction
-        p = np.array([0.0, *Omega])
+            else:
+                a = np.copy(acc)/a_norm
+                m = np.copy(mag)/m_norm
+                R = q2R_jit(q)
+                v_a = R.T@np.array([0.0, 0.0, 1.0])     # Expected Earth's gravity
+                # Rotate magnetic field to inertial frame
+                h = R@m
+                v_m = R.T@np.array([-np.linalg.norm(h[:2]), 0.0, h[2]])
+                v_m /= np.linalg.norm(v_m)
+                # ECF
+                omega_mes = np.cross(a, v_a) + np.cross(m, v_m) # Cost function (eqs. 32c and 48a)
+                b = -self.k_I*omega_mes                 # Estimated Gyro bias (eq. 48c)
+                Omega = Omega - b + self.k_P*omega_mes  # Gyro correction
+        p = np.concatenate((np.array([0.0]), Omega))
         qDot = 0.5*q_prod(q, p)                     # Rate of change of quaternion (eqs. 45 and 48b)
         q += qDot*self.Dt                           # Update orientation
         q /= np.linalg.norm(q)                      # Normalize Quaternion (Versor)
         return q
+
+    def gravity_estimate(self):
+        "Return the gravity estimate from the computed quaternions"
+        attitude = np.zeros_like(self.acc)
+        for i, q in enumerate(self.Q):
+            attitude[i] = q_rot_g(q)
+        return attitude

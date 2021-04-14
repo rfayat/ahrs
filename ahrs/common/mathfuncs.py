@@ -6,7 +6,10 @@ Common mathematical routines.
 
 import numpy as np
 from .constants import *
+from numba import njit
 
+
+@njit
 def cosd(x):
     """
     Return the cosine of `x`, which is expressed in degrees.
@@ -39,6 +42,8 @@ def cosd(x):
         x = np.asarray(x)
     return np.cos(x*DEG2RAD)
 
+
+@njit
 def sind(x):
     """
     Return the sine of `x`, which is expressed in degrees.
@@ -71,6 +76,8 @@ def sind(x):
         x = np.asarray(x)
     return np.sin(x*DEG2RAD)
 
+
+@njit
 def skew(x):
     """
     Return the 3-by-3 skew-symmetric matrix [Wiki_skew]_ of a 3-element vector x.

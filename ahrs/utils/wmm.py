@@ -569,7 +569,7 @@ class WMM:
         where :math:`K` is either :math:`(n-m)/2` or :math:`(n-m-1)/2`,
         whichever is an integer. For a computational improvement, the terms are
         calculated recursively.
-        
+
         We have to denormalize the coefficients from Schmidt to Gauss. The
         Gauss functions :math:`P^{n, m}` are related to Schmidt functions
         :math:`P_n^m` as:
