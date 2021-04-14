@@ -15,7 +15,7 @@ from typing import Tuple, Union
 import numpy as np
 from .mathfuncs import cosd, sind
 from .constants import *  # noqa W401
-from numba import njit
+from numba import njit, jit
 
 
 @njit
@@ -482,6 +482,26 @@ def q2R(q: np.ndarray) -> np.ndarray:
         [2.0*(q[1]*q[3]-q[0]*q[2]), 2.0*(q[0]*q[1]+q[2]*q[3]), 1.0-2.0*(q[1]**2+q[2]**2)]])
 
 
+@njit
+def q2R_jit(q: np.ndarray) -> np.ndarray:
+    """njit version of q2R only for one of quaternion.
+
+    Parameters
+    ----------
+    q : numpy.ndarray, shape = (4,)
+        One unit quaternion
+
+    """
+    q_normalized = q / np.linalg.norm(q)  # Normalize all quaternions
+    q0, q1, q2, q3 = q_normalized
+    return np.array([
+        [1.0-2.0*(q2**2+q3**2), 2.0*(q1*q2-q0*q3), 2.0*(q1*q3+q0*q2)],
+        [2.0*(q1*q2+q0*q3), 1.0-2.0*(q1**2+q3**2), 2.0*(q2*q3-q0*q1)],
+        [2.0*(q1*q3-q0*q2), 2.0*(q0*q1+q2*q3), 1.0-2.0*(q1**2+q2**2)]])
+
+
+
+
 def q2euler(q: np.ndarray) -> np.ndarray:
     """Euler Angles from unit Quaternion.
 
@@ -822,10 +842,55 @@ def ecompass(a: np.ndarray, m: np.ndarray, frame: str = 'ENU', representation: s
         When wrong local tangent plane coordinates, or invalid representation,
         is given.
     """
-    if frame.upper() not in ['ENU', 'NED']:
-        raise ValueError("Wrong local tangent plane coordinate frame. Try 'ENU' or 'NED'")
     if representation.lower() not in ['rotmat', 'quaternion', 'rpy', 'axisangle']:
         raise ValueError("Wrong representation type. Try 'rotmat', 'quaternion', 'rpy', or 'axisangle'")
+    R = ecompass_rotmat(a, m, frame)
+    if representation.lower() == 'quaternion':
+        return chiaverini(R)
+    elif representation.lower() == 'rpy':
+        phi = np.arctan2(R[1, 2], R[2, 2])    # Roll Angle
+        theta = -np.arcsin(R[0, 2])           # Pitch Angle
+        psi = np.arctan2(R[0, 1], R[0, 0])    # Yaw Angle
+        return np.array([phi, theta, psi])
+    elif representation.lower() == 'axisangle':
+        angle = np.arccos((R.trace()-1)/2)
+        axis = np.zeros(3)
+        if angle!=0:
+            S = np.array([R[2, 1]-R[1, 2], R[0, 2]-R[2, 0], R[1, 0]-R[0, 1]])
+            axis = S/(2*np.sin(angle))
+        return (axis, angle)
+    else:  # rotmat
+        return R
+
+
+@njit
+def ecompass_rotmat(a: np.ndarray, m: np.ndarray, frame: str = 'ENU') -> np.ndarray:
+    """Orientation from acc and mag readings as a rotation matrix
+
+    Parameters
+    ----------
+    a : numpy.ndarray
+        Sample of tri-axial accelerometer, in m/s^2.
+    m : numpy.ndarray
+        Sample of tri-axial magnetometer, in uT.
+    frame : str, default: ``'ENU'``
+        Local tangent plane coordinate frame.
+    representation : str, default: ``'rotmat'``
+        Orientation representation.
+
+    Returns
+    -------
+    np.ndarray
+        Estimated orientation.
+
+    Raises
+    ------
+    ValueError
+        When wrong local tangent plane coordinates, or invalid representation,
+        is given.
+    """
+    if frame.upper() not in ['ENU', 'NED']:
+        raise ValueError("Wrong local tangent plane coordinate frame. Try 'ENU' or 'NED'")
     a = np.copy(a)
     m = np.copy(m)
     if a.shape[-1] != 3 or m.shape[-1] != 3:
@@ -840,23 +905,38 @@ def ecompass(a: np.ndarray, m: np.ndarray, frame: str = 'ENU', representation: s
         Ry = np.cross(Rz, Rx)
     Rx /= np.linalg.norm(Rx)
     Ry /= np.linalg.norm(Ry)
-    R = np.c_[Rx, Ry, Rz].T
-    if representation.lower() == 'quaternion':
-        return chiaverini(R)
-    if representation.lower() == 'rpy':
-        phi = np.arctan2(R[1, 2], R[2, 2])    # Roll Angle
-        theta = -np.arcsin(R[0, 2])           # Pitch Angle
-        psi = np.arctan2(R[0, 1], R[0, 0])    # Yaw Angle
-        return np.array([phi, theta, psi])
-    if representation.lower() == 'axisangle':
-        angle = np.arccos((R.trace()-1)/2)
-        axis = np.zeros(3)
-        if angle!=0:
-            S = np.array([R[2, 1]-R[1, 2], R[0, 2]-R[2, 0], R[1, 0]-R[0, 1]])
-            axis = S/(2*np.sin(angle))
-        return (axis, angle)
+    R = np.vstack((Rx, Ry, Rz))
     return R
 
+
+@njit
+def ecompass_quaternion(a: np.ndarray, m: np.ndarray, frame: str = 'ENU') -> np.array:
+    """Orientation from accelerometer and magnetometer readings as a quaternion
+
+    Parameters
+    ----------
+    a : numpy.ndarray
+        Sample of tri-axial accelerometer, in m/s^2.
+    m : numpy.ndarray
+        Sample of tri-axial magnetometer, in uT.
+    frame : str, default: ``'ENU'``
+        Local tangent plane coordinate frame.
+    representation : str, default: ``'rotmat'``
+        Orientation representation.
+
+    Returns
+    -------
+    np.ndarray
+        Estimated orientation.
+
+    Raises
+    ------
+    ValueError
+        When wrong local tangent plane coordinates, or invalid representation,
+        is given.
+    """
+    R = ecompass_rotmat(a, m , frame)
+    return chiaverini(R)
 
 @njit
 def am2DCM(a: np.ndarray, m: np.ndarray, frame: str = 'ENU') -> np.ndarray:
@@ -1107,6 +1187,7 @@ def logR(R: np.ndarray) -> np.ndarray:
     return np.arcsin(y_norm)*y/y_norm
 
 
+@njit
 def chiaverini(dcm: np.ndarray) -> np.ndarray:
     """
     Quaternion from a Direction Cosine Matrix with Chiaverini's algebraic method [Chiaverini]_.
@@ -1121,11 +1202,13 @@ def chiaverini(dcm: np.ndarray) -> np.ndarray:
     q : NumPy array
         Quaternion.
     """
-    n = 0.5*np.sqrt(dcm.trace() + 1.0)
-    e = np.array([0.5*np.sign(dcm[2, 1]-dcm[1, 2])*np.sqrt(dcm[0, 0]-dcm[1, 1]-dcm[2, 2]+1.0),
-                  0.5*np.sign(dcm[0, 2]-dcm[2, 0])*np.sqrt(dcm[1, 1]-dcm[2, 2]-dcm[0, 0]+1.0),
-                  0.5*np.sign(dcm[1, 0]-dcm[0, 1])*np.sqrt(dcm[2, 2]-dcm[0, 0]-dcm[1, 1]+1.0)])
-    return np.array([n, *e])
+    return np.array([
+        0.5*np.sqrt(dcm[0, 0] + dcm[1, 1] + dcm[2, 2] + 1.0),
+        0.5*np.sign(dcm[2, 1]-dcm[1, 2])*np.sqrt(dcm[0, 0]-dcm[1, 1]-dcm[2, 2]+1.0),
+        0.5*np.sign(dcm[0, 2]-dcm[2, 0])*np.sqrt(dcm[1, 1]-dcm[2, 2]-dcm[0, 0]+1.0),
+        0.5*np.sign(dcm[1, 0]-dcm[0, 1])*np.sqrt(dcm[2, 2]-dcm[0, 0]-dcm[1, 1]+1.0)
+    ])
+
 
 
 def hughes(dcm: np.ndarray) -> np.ndarray:

@@ -728,8 +728,8 @@ class Madgwick:
         q /= np.linalg.norm(q)
         return q
 
-    def attitude_estimate(self):
-        "Return the attitude estimate from the computed quaternions"
+    def gravity_estimate(self):
+        "Return the gravity estimate from the computed quaternions"
         attitude = np.zeros_like(self.acc)
         for i, q in enumerate(self.Q):
             attitude[i] = q_rot_g(q)

@@ -873,9 +873,39 @@ References
 """
 
 import numpy as np
-from ..common.orientation import q2R, ecompass, acc2q
-from ..common.mathfuncs import cosd, sind, skew
+from ..common.orientation import q2R_jit, ecompass_quaternion, acc2q
+from ..common.mathfuncs import skew
+from ..common.constants import DEG2RAD
+from numba import types
+from numba.experimental import jitclass
 
+
+spec = [
+    ("acc", types.double[:, :]),
+    ("gyr", types.double[:, :]),
+    ("mag", types.double[:, :]),
+    ("frequency", types.double),
+    ("frame", types.string),
+    ("Dt", types.double),
+    ("q0", types.double[:]),
+    ("P", types.double[:, :]),
+    ("R", types.double[:, :]),
+    ("noises", types.double[:]),
+    ("g_noise", types.double),
+    ("m_noise", types.double),
+    ("a_noise", types.double),
+    ("m_ref", types.double[:]),
+    ("a_ref", types.double[:]),
+    ("z", types.double[:]),
+    ("has_mag", types.boolean),
+    ("has_q0", types.boolean),
+    ("Q", types.double[:, :]),
+    ("noises", types.double[:]),
+    ("q", types.double[:]),
+]
+
+
+@jitclass(spec)
 class EKF:
     """
     Extended Kalman Filter to estimate orientation as Quaternion.
@@ -971,68 +1001,112 @@ class EKF:
         Initial orientation, as a versor (normalized quaternion).
     magnetic_ref : float or numpy.ndarray
         Local magnetic reference.
-    noises : numpy.ndarray
-        List of noise variances for each type of sensor. Default values:
-        ``[0.3**2, 0.5**2, 0.8**2]``.
+    noises : numpy.ndarray, default = ``[0.3**2, 0.5**2, 0.8**2]``
+        List of noise variances for each type of sensor (gyr, acc, mag).
+    var_gyr : float, default: None
+        Noise for the gyroscopes, overrides the value provided in noises.
+    var_acc : float, default: None
+        Noise for the accelerometers, overrides the value provided in noises.
+    var_mag : float, default: None
+        Noise for the magnetometers, overrides the value provided in noises.
     Dt : float, default: 0.01
         Sampling step in seconds. Inverse of sampling frequency. NOT required
         if ``frequency`` value is given.
 
     """
     def __init__(self,
-        gyr: np.ndarray = None,
-        acc: np.ndarray = None,
-        mag: np.ndarray = None,
-        frequency: float = 100.0,
-        frame: str = 'NED',
-        **kwargs):
-        self.gyr = gyr
-        self.acc = acc
-        self.mag = mag
-        self.frequency = frequency
-        self.frame = frame                          # Local tangent plane coordinate frame
-        self.Dt = kwargs.get('Dt', 1.0/self.frequency)
-        self.q0 = kwargs.get('q0')
-        self.P = np.identity(4)                     # Initial state covariance
-        self.R = self._set_measurement_noise_covariance(**kwargs)
-        self._set_reference_frames(kwargs.get('magnetic_ref'), self.frame)
-        # Process of data is given
-        if self.gyr is not None and self.acc is not None:
-            self.Q = self._compute_all(self.frame)
+                 gyr: np.ndarray = None,
+                 acc: np.ndarray = None,
+                 mag: np.ndarray = None,
+                 frequency: float = 100.0,
+                 frame: str = 'NED',
+                 Dt: float = None,
+                 q0: np.ndarray = None,
+                 noises: np.ndarray = np.array([0.3**2, 0.5**2, 0.8**2]),
+                 var_gyr: float = None,
+                 var_acc: float = None,
+                 var_mag: float = None,
+                 magnetic_ref = None):
+        if gyr is not None and acc is not None:
+            self.gyr = gyr
+            self.acc = acc
+            do_computation = True
+        else:
+            do_computation = False
 
-    def _set_measurement_noise_covariance(self, **kw) -> np.ndarray:
-        self.noises = np.array(kw.get('noises', [0.3**2, 0.5**2, 0.8**2]))
-        if 'var_gyr' in kw:
-            self.noises[0] = kw.get('var_gyr')
-        if 'var_acc' in kw:
-            self.noises[1] = kw.get('var_acc')
-        if 'var_mag' in kw:
-            self.noises[2] = kw.get('var_mag')
-        self.g_noise, self.a_noise, self.m_noise = self.noises
-        if self.mag is None:
+        if mag is not None:
+            self.mag = mag
+            self.has_mag = True
+        else:
+            self.has_mag =False
+
+        if Dt is None:
+            self.frequency = frequency
+            self.Dt = 1. / self.frequency
+        else:
+            self.Dt = Dt
+            self.frequency = 1. / self.Dt
+
+        self.frame = frame               # Local tangent plane coordinate frame
+
+        if q0 is not None:
+            self.q0 = q0
+            self.has_q0 = True
+        else:
+            self.has_q0 = False
+
+        self.P = np.identity(4)                     # Initial state covariance
+
+        if var_gyr is not None:
+            noises[0] = var_gyr
+        if var_acc is not None:
+            noises[1] = var_acc
+        if var_mag is not None:
+            noises[2] = var_mag
+        self.noises = noises
+        self.R = self._set_measurement_noise_covariance()
+
+        self._set_reference_frames(magnetic_ref, self.frame)
+
+        # Process if data is given
+        if do_computation:
+            self.Q = self._compute_all()
+
+    def _set_measurement_noise_covariance(self) -> np.ndarray:
+        self.g_noise = self.noises[0]
+        self.a_noise = self.noises[1]
+        self.m_noise = self.noises[2]
+        if not self.has_mag:
             return np.diag(np.repeat(self.a_noise, 3))
-        return np.diag(np.repeat(self.noises[1:], 3))
+        else:
+            return np.diag(np.repeat(self.noises[1:], 3))
 
     def _set_reference_frames(self, mref: float, frame: str = 'NED') -> None:
         if frame.upper() not in ['NED', 'ENU']:
-            raise ValueError(f"Invalid frame '{frame}'. Try 'NED' or ENU'")
+            raise ValueError("Invalid frame. Try 'NED' or ENU'")
         # Magnetic Reference Vector
         if mref is None:
             # Local magnetic reference of Munich, Germany
-            from ..common.mathfuncs import MUNICH_LATITUDE, MUNICH_LONGITUDE, MUNICH_HEIGHT
-            from ..utils.wmm import WMM
-            wmm = WMM(latitude=MUNICH_LATITUDE, longitude=MUNICH_LONGITUDE, height=MUNICH_HEIGHT)
-            self.m_ref = np.array([wmm.X, wmm.Y, wmm.Z]) if frame.upper() == 'NED' else np.array([wmm.Y, wmm.X, -wmm.Z])
+            if frame.upper() == "NED":
+                self.m_ref = np.array([17062.50577835, 792.29484609, 34399.29848288])
+            else:  # "ENU"
+                self.m_ref = np.array([792.29484609, 17062.50577835, -34399.29848288])
         elif isinstance(mref, (int, float)):
-            cd, sd = cosd(mref), sind(mref)
-            self.m_ref = np.array([cd, 0.0, sd]) if frame.upper() == 'NED' else np.array([0.0, cd, -sd])
-        else:
+            cd, sd = np.cos(mref * DEG2RAD), np.sin(mref * DEG2RAD)
+            if frame.upper() == "NED":
+                self.m_ref = np.array([cd, 0.0, sd])
+            else:
+                self.m_ref = np.array([0.0, cd, -sd])
+        else:  # m_ref given as input
             self.m_ref = np.copy(mref)
         self.m_ref /= np.linalg.norm(self.m_ref)
         # Gravitational Reference Vector
-        self.a_ref = np.array([0.0, 0.0, -1.0]) if frame.upper() == 'NED' else np.array([0.0, 0.0, 1.0])
+        if frame.upper() == "NED":
+            self.a_ref = np.array([0.0, 0.0, -1.0])
+        else:  # "ENU"
+            self.a_ref = np.array([0.0, 0.0, 1.0])
 
-    def _compute_all(self, frame: str) -> np.ndarray:
+    def _compute_all(self) -> np.ndarray:
         """
         Estimate the quaternions given all sensor data.
 
@@ -1050,20 +1124,25 @@ class EKF:
             raise ValueError("acc and gyr are not the same size")
         num_samples = len(self.acc)
         Q = np.zeros((num_samples, 4))
-        Q[0] = self.q0
-        if self.mag is not None:
+
+        if self.has_q0:
+            Q[0] = self.q0
+
+        if self.has_mag:
             ###### Compute attitude with MARG architecture ######
             if self.mag.shape != self.gyr.shape:
                 raise ValueError("mag and gyr are not the same size")
-            if self.q0 is None:
-                Q[0] = ecompass(self.acc[0], self.mag[0], frame=frame, representation='quaternion')
-            Q[0] /= np.linalg.norm(Q[0])
+
+            if not self.has_q0:
+                Q[0] = ecompass_quaternion(self.acc[0], self.mag[0], self.frame)
+
+            Q[0] = Q[0] / np.linalg.norm(Q[0])
             # EKF Loop over all data
             for t in range(1, num_samples):
                 Q[t] = self.update(Q[t-1], self.gyr[t], self.acc[t], self.mag[t])
             return Q
         ###### Compute attitude with IMU architecture ######
-        if self.q0 is None:
+        if not self.has_q0:
             Q[0] = acc2q(self.acc[0])
         Q[0] /= np.linalg.norm(Q[0])
         # EKF Loop over all data
@@ -1132,7 +1211,7 @@ class EKF:
             Linearized estimated quaternion in **Prediction** step.
         """
         Omega_t = self.Omega(omega)
-        return (np.identity(4) + 0.5*self.Dt*Omega_t) @ q
+        return (np.identity(4) + 0.5 * self.Dt * Omega_t) @ q
 
     def dfdq(self, omega: np.ndarray) -> np.ndarray:
         """Jacobian of linearized predicted state.
@@ -1156,7 +1235,7 @@ class EKF:
         F : numpy.ndarray
             Jacobian of state.
         """
-        x = 0.5*self.Dt*omega
+        x = 0.5 * self.Dt * omega
         return np.identity(4) + self.Omega(x)
 
     def h(self, q: np.ndarray) -> np.ndarray:
@@ -1183,17 +1262,17 @@ class EKF:
         numpy.ndarray
             Expected Measurements.
         """
-        C = q2R(q).T
+        C = q2R_jit(q).T
         if len(self.z)<4:
             return C @ self.a_ref
-        return np.r_[C @ self.a_ref, C @ self.m_ref]
+        return np.concatenate((C @ self.a_ref, C @ self.m_ref))
 
-    def dhdq(self, q: np.ndarray, mode: str = 'normal') -> np.ndarray:
+    def dhdq(self, q: np.ndarray) -> np.ndarray:
         """Linearization of observations with Jacobian.
 
         .. math::
             \\mathbf{H}(\\hat{\\mathbf{q}}_t) =
-            2 
+            2
             \\begin{bmatrix}
             g_yq_z - g_zq_y & g_yq_y + g_zq_z & - 2g_xq_y + g_yq_x - g_zq_w & - 2g_xq_z + g_yq_w + g_zq_x \\\\
             -g_xq_z + g_zq_x & g_xq_y - 2g_yq_x + g_zq_w & g_xq_x + g_zq_z & -g_xq_w - 2g_yq_z + g_zq_y \\\\
@@ -1203,45 +1282,18 @@ class EKF:
             r_xq_y - r_yq_x & r_xq_z - r_yq_w - 2r_zq_x & r_xq_w + r_yq_z - 2r_zq_y & r_xq_x + r_yq_y
             \\end{bmatrix}
 
-        If ``mode`` is equal to ``'refactored'``, the computation is carried
-        out as:
-
-        .. math::
-            \\mathbf{H}(\\hat{\\mathbf{q}}_t) = 2
-            \\begin{bmatrix}
-            \\mathbf{u}_g & \\lfloor\\mathbf{u}_g+\\hat{q}_w\\mathbf{g}\\rfloor_\\times + (\\hat{\\mathbf{q}}_v\\cdot\\mathbf{g})\\mathbf{I}_3 - \\mathbf{g}\\hat{\\mathbf{q}}_v^T \\\\
-            \\mathbf{u}_r & \\lfloor\\mathbf{u}_r+\\hat{q}_w\\mathbf{r}\\rfloor_\\times + (\\hat{\\mathbf{q}}_v\\cdot\\mathbf{r})\\mathbf{I}_3 - \\mathbf{r}\\hat{\\mathbf{q}}_v^T
-            \\end{bmatrix}
-
-        .. warning::
-            The refactored mode might lead to slightly different results as it
-            employs more and different operations than the normal mode,
-            created by the nummerical capabilities of the host system.
-
         Parameters
         ----------
         q : numpy.ndarray
             Predicted state estimate.
-        mode : str, default: 'normal'
-            Computation mode for Observation matrix.
 
         Returns
         -------
         H : numpy.ndarray
             Jacobian of observations.
         """
-        if mode.lower() not in ['normal', 'refactored']:
-            raise ValueError(f"Mode '{mode}' is invalid. Try 'normal' or 'refactored'.")
         qw, qx, qy, qz = q
-        if mode.lower() == 'refactored':
-            t = skew(self.a_ref)@q[1:]
-            H = np.c_[t, q[1:]*self.a_ref*np.identity(3) + skew(t + qw*self.a_ref) - np.outer(self.a_ref, q[1:])]
-            if len(self.z) == 6:
-                t = skew(self.m_ref)@q[1:]
-                H_2 = np.c_[t, q[1:]*self.m_ref*np.identity(3) + skew(t + qw*self.m_ref) - np.outer(self.m_ref, q[1:])]
-                H = np.vstack((H, H_2))
-            return 2.0*H
-        v = np.r_[self.a_ref, self.m_ref]
+        v = np.concatenate((self.a_ref, self.m_ref))
         H = np.array([[-qy*v[2] + qz*v[1],  qy*v[1] + qz*v[2], -qw*v[2] + qx*v[1] - 2.0*qy*v[0],  qw*v[1] + qx*v[2] - 2.0*qz*v[0]],
                       [ qx*v[2] - qz*v[0],  qw*v[2] - 2.0*qx*v[1] + qy*v[0],  qx*v[0] + qz*v[2], -qw*v[0] + qy*v[2] - 2.0*qz*v[1]],
                       [-qx*v[1] + qy*v[0], -qw*v[1] - 2.0*qx*v[2] + qz*v[0],  qw*v[0] - 2.0*qy*v[2] + qz*v[1],  qx*v[0] + qy*v[1]]])
@@ -1251,6 +1303,37 @@ class EKF:
                             [-qx*v[4] + qy*v[3], -qw*v[4] - 2.0*qx*v[5] + qz*v[3],  qw*v[3] - 2.0*qy*v[5] + qz*v[4],  qx*v[3] + qy*v[4]]])
             H = np.vstack((H, H_2))
         return 2.0*H
+
+    def dhdq_refactored(self, q: np.ndarray) -> np.ndarray:
+        """Linearization of observations with Jacobian in refactored mode.
+
+        .. math::
+            \\mathbf{H}(\\hat{\\mathbf{q}}_t) = 2
+            \\begin{bmatrix}
+            \\mathbf{u}_g & \\lfloor\\mathbf{u}_g+\\hat{q}_w\\mathbf{g}\\rfloor_\\times + (\\hat{\\mathbf{q}}_v\\cdot\\mathbf{g})\\mathbf{I}_3 - \\mathbf{g}\\hat{\\mathbf{q}}_v^T \\\\
+            \\mathbf{u}_r & \\lfloor\\mathbf{u}_r+\\hat{q}_w\\mathbf{r}\\rfloor_\\times + (\\hat{\\mathbf{q}}_v\\cdot\\mathbf{r})\\mathbf{I}_3 - \\mathbf{r}\\hat{\\mathbf{q}}_v^T
+            \\end{bmatrix}
+
+
+        Parameters
+        ----------
+        q : numpy.ndarray
+            Predicted state estimate.
+
+        Returns
+        -------
+        H : numpy.ndarray
+            Jacobian of observations.
+        """
+        qw, qx, qy, qz = q
+        t = skew(self.a_ref) @ q[1:]
+
+        H = np.hstack((t.reshape(-1, 1), q[1:] * self.a_ref * np.identity(3) + skew(t + qw*self.a_ref) - np.outer(self.a_ref, q[1:])))
+        if len(self.z) == 6:
+            t = skew(self.m_ref) @ q[1:]
+            H_2 = np.hstack((t.reshape(-1, 1), q[1:] * self.m_ref * np.identity(3) + skew(t + qw*self.m_ref) - np.outer(self.m_ref, q[1:])))
+            H = np.vstack((H, H_2))
+        return 2.0 * H
 
     def update(self, q: np.ndarray, gyr: np.ndarray, acc: np.ndarray, mag: np.ndarray = None) -> np.ndarray:
         """
@@ -1273,7 +1356,7 @@ class EKF:
             Estimated a-posteriori orientation as quaternion.
 
         """
-        if not np.isclose(np.linalg.norm(q), 1.0):
+        if not np.abs(np.linalg.norm(q) - 1.) < 1e-08:
             raise ValueError("A-priori quaternion must have a norm equal to 1.")
         # Current Measurements
         g = np.copy(gyr)                # Gyroscope data as control vector
@@ -1286,20 +1369,20 @@ class EKF:
         if mag is not None:
             m_norm = np.linalg.norm(mag)
             if m_norm>0:
-                self.z = np.r_[a, mag/m_norm]
+                self.z = np.concatenate((a, mag / m_norm))
         # ----- Prediction -----
         q_t = self.f(q, g)                  # Predicted State
         F   = self.dfdq(g)                  # Linearized Fundamental Matrix
-        W   = 0.5*self.Dt * np.r_[[-q[1:]], q[0]*np.identity(3) + skew(q[1:])]  # Jacobian W = df/dω
+        W   = 0.5*self.Dt * np.vstack((-q[1:].reshape(1, -1), q[0]*np.identity(3) + skew(q[1:])))  # Jacobian W = df/dω
         Q_t = 0.5*self.Dt * self.g_noise * W@W.T    # Process Noise Covariance
-        P_t = F@self.P@F.T + Q_t            # Predicted Covariance Matrix
+        P_t = F @ self.P @ F.T + Q_t            # Predicted Covariance Matrix
         # ----- Correction -----
         y   = self.h(q_t)                   # Expected Measurement function
         v   = self.z - y                    # Innovation (Measurement Residual)
         H   = self.dhdq(q_t)                # Linearized Measurement Matrix
-        S   = H@P_t@H.T + self.R            # Measurement Prediction Covariance
-        K   = P_t@H.T@np.linalg.inv(S)      # Kalman Gain
+        S   = H @ P_t @ H.T + self.R        # Measurement Prediction Covariance
+        K   = P_t @ H.T @ np.linalg.inv(S)  # Kalman Gain
         self.P = (np.identity(4) - K@H)@P_t
-        self.q = q_t + K@v                  # Corrected state
+        self.q = q_t + K @ v                # Corrected state
         self.q /= np.linalg.norm(self.q)
         return self.q
