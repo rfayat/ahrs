@@ -873,7 +873,7 @@ References
 """
 
 import numpy as np
-from ..common.orientation import q2R_jit, ecompass_quaternion, acc2q
+from ..common.orientation import q2R_jit, ecompass_quaternion, acc2q, q_rot_g
 from ..common.mathfuncs import skew
 from ..common.constants import DEG2RAD
 from numba import types
