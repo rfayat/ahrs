@@ -1091,12 +1091,12 @@ class EKF:
                 self.m_ref = np.array([17062.50577835, 792.29484609, 34399.29848288])
             else:  # "ENU"
                 self.m_ref = np.array([792.29484609, 17062.50577835, -34399.29848288])
-        elif isinstance(mref, (int, float)):
-            cd, sd = np.cos(mref * DEG2RAD), np.sin(mref * DEG2RAD)
-            if frame.upper() == "NED":
-                self.m_ref = np.array([cd, 0.0, sd])
-            else:
-                self.m_ref = np.array([0.0, cd, -sd])
+        # elif isinstance(mref, (int, float)):
+        #     cd, sd = np.cos(mref * DEG2RAD), np.sin(mref * DEG2RAD)
+        #     if frame.upper() == "NED":
+        #         self.m_ref = np.array([cd, 0.0, sd])
+        #     else:
+        #         self.m_ref = np.array([0.0, cd, -sd])
         else:  # m_ref given as input
             self.m_ref = np.copy(mref)
         self.m_ref /= np.linalg.norm(self.m_ref)
@@ -1386,3 +1386,10 @@ class EKF:
         self.q = q_t + K @ v                # Corrected state
         self.q /= np.linalg.norm(self.q)
         return self.q
+
+    def gravity_estimate(self):
+        "Return the gravity estimate from the computed quaternions"
+        attitude = np.zeros_like(self.acc)
+        for i, q in enumerate(self.Q):
+            attitude[i] = q_rot_g(q)
+        return attitude
